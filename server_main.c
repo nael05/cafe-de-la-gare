@@ -46,6 +46,7 @@ typedef struct {
     struct sockaddr_in  addr;
     int                 has_addr;
     DWORD               last_seen;
+    DWORD               respawn_time;  /* 0 = vivant, sinon = moment de mort */
 } ServerPlayer;
 
 static ServerPlayer    players[MAX_PLAYERS];
@@ -123,6 +124,8 @@ static void timeout_inactive(void) {
 }
 
 static void check_food_collision(ServerPlayer *p) {
+    /* Skip collision check for dead players (waiting to respawn) */
+    if (p->respawn_time != 0) return;
     float r2 = (p->radius + 6.0f) * (p->radius + 6.0f);
     for (int i = 0; i < food_count; i++) {
         float dx = p->x - food[i].x;
@@ -139,9 +142,9 @@ static void check_food_collision(ServerPlayer *p) {
 
 static void check_player_collision(void) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (!players[i].active) continue;
+        if (!players[i].active || players[i].respawn_time != 0) continue;
         for (int j = 0; j < MAX_PLAYERS; j++) {
-            if (!players[j].active || i == j) continue;
+            if (!players[j].active || players[j].respawn_time != 0 || i == j) continue;
             float dx = players[i].x - players[j].x;
             float dy = players[i].y - players[j].y;
             float dz = players[i].z - players[j].z;
@@ -152,11 +155,25 @@ static void check_player_collision(void) {
                 float vp = (4.0f/3.0f)*3.14159f*players[j].radius*players[j].radius*players[j].radius;
                 ve += vp;
                 players[i].radius = cbrtf(ve / ((4.0f/3.0f)*3.14159f));
-                players[j].radius = 25.0f;
-                players[j].x = frand_in(100.0f, MAP_SIZE - 100.0f);
-                players[j].y = frand_in(100.0f, MAP_SIZE - 100.0f);
-                players[j].z = frand_in(100.0f, MAP_SIZE - 100.0f);
+                /* Marquer le joueur mangé comme mort, il respawnera dans 3 secondes */
+                players[j].respawn_time = GetTickCount();
             }
+        }
+    }
+}
+
+static void check_respawn_timers(void) {
+    DWORD now = GetTickCount();
+    const DWORD respawn_delay_ms = 3000;  /* 3 secondes */
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (!players[i].active || players[i].respawn_time == 0) continue;
+        if (now - players[i].respawn_time >= respawn_delay_ms) {
+            /* Respawner le joueur */
+            players[i].radius = 25.0f;
+            players[i].x = frand_in(100.0f, MAP_SIZE - 100.0f);
+            players[i].y = frand_in(100.0f, MAP_SIZE - 100.0f);
+            players[i].z = frand_in(100.0f, MAP_SIZE - 100.0f);
+            players[i].respawn_time = 0;  /* Marqué comme vivant */
         }
     }
 }
@@ -229,6 +246,7 @@ static DWORD WINAPI ServerThread(LPVOID p) {
                     players[id].y = frand_in(200.0f, MAP_SIZE - 200.0f);
                     players[id].z = frand_in(200.0f, MAP_SIZE - 200.0f);
                     players[id].radius = 25.0f;
+                    players[id].respawn_time = 0;
                 }
 
                 float base_speed = 4.0f;
@@ -239,6 +257,7 @@ static DWORD WINAPI ServerThread(LPVOID p) {
                 clamp_to_cube(&players[id].x, &players[id].y, &players[id].z, players[id].radius);
                 check_food_collision(&players[id]);
                 check_player_collision();
+                check_respawn_timers();
                 LeaveCriticalSection(&g_cs);
             }
         }
